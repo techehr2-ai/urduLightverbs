@@ -57,7 +57,18 @@ parser.add_argument(
 parser.add_argument(
     "--pca-png",
     default="urdu_mbert_lightverb_pca.png",
-    help="Where to save the PCA scatter plot.",
+    help="Where to save the per-verb PCA grid (one subplot per verb).",
+)
+parser.add_argument(
+    "--bar-png",
+    default="urdu_mbert_lightverb_bars.png",
+    help="Where to save the per-verb cosine-distance bar chart.",
+)
+parser.add_argument(
+    "--global-pca-png",
+    default=None,
+    help="Optional: also save a single global PCA over ALL verbs to this path. "
+         "Off by default (the per-verb grid is usually more readable).",
 )
 args = parser.parse_args()
 
@@ -195,7 +206,7 @@ for verb in df["verb"].unique():
 results_df = pd.DataFrame(results).sort_values(
     "cosine_distance",
     ascending=False
-)
+).reset_index(drop=True)
 
 print("\nMain vs Light Verb Distance")
 print(results_df)
@@ -203,30 +214,154 @@ print(results_df)
 results_df.to_csv(args.results_csv, index=False)
 
 # ----------------------------
-# 5. PCA visualization
+# 5. Visualisation
 # ----------------------------
+# 5a. Per-verb PCA grid: one subplot per verb (fit PCA only on that verb's
+#     examples so inter-verb variance does not dominate the layout).
+# 5b. Cosine-distance bar chart across all verbs.
+# 5c. (Optional) Global PCA across all verbs (legacy view).
 
-X = np.stack(df["embedding"].values)
+COLOR_MAIN  = "#1f77b4"   # blue
+COLOR_LIGHT = "#d62728"   # red
 
-pca = PCA(n_components=2)
-coords = pca.fit_transform(X)
+verbs_with_both = results_df["verb"].tolist()
+n_verbs = len(verbs_with_both)
 
-df["pc1"] = coords[:, 0]
-df["pc2"] = coords[:, 1]
+# ---- 5a. Per-verb PCA grid ----
+if n_verbs > 0:
+    n_cols = min(3, n_verbs)
+    n_rows = (n_verbs + n_cols - 1) // n_cols
 
-plt.figure(figsize=(10, 7))
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(5.5 * n_cols, 4.5 * n_rows),
+        squeeze=False,
+    )
 
-for usage in ["main", "light"]:
-    sub = df[df["usage"] == usage]
-    plt.scatter(sub["pc1"], sub["pc2"], label=usage, alpha=0.7)
+    for ax_idx, verb in enumerate(verbs_with_both):
+        ax = axes[ax_idx // n_cols][ax_idx % n_cols]
+        sub = df[df["verb"] == verb].copy()
 
-for _, row in df.iterrows():
-    plt.text(row["pc1"], row["pc2"], reshape_urdu(row["verb"]), fontsize=8)
+        if len(sub) < 2:
+            ax.text(0.5, 0.5, "not enough points",
+                    ha="center", va="center", transform=ax.transAxes)
+            ax.set_xticks([]); ax.set_yticks([])
+            continue
 
-plt.title("mBERT Embeddings: Urdu Main Verb vs Light Verb Uses")
-plt.xlabel("PC1")
-plt.ylabel("PC2")
-plt.legend()
-plt.tight_layout()
-plt.savefig(args.pca_png, dpi=300)
-plt.show()
+        X_verb = np.stack(sub["embedding"].values)
+        pca_verb = PCA(n_components=2)
+        coords_verb = pca_verb.fit_transform(X_verb)
+        sub["pc1"] = coords_verb[:, 0]
+        sub["pc2"] = coords_verb[:, 1]
+
+        for usage, color, marker in [
+            ("main",  COLOR_MAIN,  "o"),
+            ("light", COLOR_LIGHT, "X"),
+        ]:
+            sub_u = sub[sub["usage"] == usage]
+            if len(sub_u) == 0:
+                continue
+            ax.scatter(
+                sub_u["pc1"], sub_u["pc2"],
+                c=color, marker=marker, alpha=0.55, s=55,
+                edgecolors="white", linewidths=0.5,
+                label=f"{usage} (n={len(sub_u)})",
+            )
+            # Big star centroid per group.
+            cx = sub_u["pc1"].mean()
+            cy = sub_u["pc2"].mean()
+            ax.scatter([cx], [cy], c=color, marker="*", s=320,
+                       edgecolors="black", linewidths=1.2, zorder=5)
+
+        # Title: Urdu verb + cosine distance for this verb.
+        row_res = results_df[results_df["verb"] == verb].iloc[0]
+        cos_dist = row_res["cosine_distance"]
+        try:
+            verb_display = reshape_urdu(verb)
+        except Exception:
+            verb_display = verb
+        ax.set_title(
+            f"{verb_display}    cos_dist = {cos_dist:.3f}",
+            fontproperties=urdu_font if urdu_font else None,
+            fontsize=13,
+        )
+        ax.set_xlabel("PC1")
+        ax.set_ylabel("PC2")
+        ax.grid(True, alpha=0.25)
+        ax.legend(loc="best", fontsize=8)
+
+    # Hide any unused subplots in the trailing row.
+    for ax_idx in range(n_verbs, n_rows * n_cols):
+        axes[ax_idx // n_cols][ax_idx % n_cols].set_visible(False)
+
+    fig.suptitle("Per-Verb PCA: Main vs Light Usage", fontsize=15)
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    plt.savefig(args.pca_png, dpi=200)
+    print(f"Saved per-verb PCA grid to {args.pca_png}")
+    plt.show()
+
+# ---- 5b. Cosine-distance bar chart across all verbs ----
+if not results_df.empty:
+    fig, ax = plt.subplots(figsize=(9, max(3.5, 0.5 * len(results_df))))
+    verb_labels = [
+        (reshape_urdu(v) if urdu_font else v) for v in results_df["verb"]
+    ]
+
+    ax.barh(range(len(results_df)), results_df["cosine_distance"],
+            color="steelblue")
+    ax.set_yticks(range(len(results_df)))
+    ax.set_yticklabels(
+        verb_labels,
+        fontproperties=urdu_font if urdu_font else None,
+        fontsize=12,
+    )
+    ax.invert_yaxis()
+    ax.set_xlabel("Cosine distance between main and light centroids")
+    ax.set_title("Per-Verb Main vs Light Separation")
+    for i, (_, row) in enumerate(results_df.iterrows()):
+        ax.text(
+            row["cosine_distance"] + 0.003, i,
+            f"  main={int(row['main_examples'])}, "
+            f"light={int(row['light_examples'])}",
+            va="center", fontsize=9,
+        )
+    ax.grid(True, axis="x", alpha=0.25)
+    plt.tight_layout()
+    plt.savefig(args.bar_png, dpi=200)
+    print(f"Saved cosine-distance bar chart to {args.bar_png}")
+    plt.show()
+
+# ---- 5c. Optional global PCA across all verbs ----
+if args.global_pca_png:
+    X = np.stack(df["embedding"].values)
+    pca = PCA(n_components=2)
+    coords = pca.fit_transform(X)
+    df["pc1"] = coords[:, 0]
+    df["pc2"] = coords[:, 1]
+
+    fig, ax = plt.subplots(figsize=(11, 8))
+    unique_verbs = list(df["verb"].unique())
+    cmap = plt.get_cmap("tab10")
+    color_map = {v: cmap(i % 10) for i, v in enumerate(unique_verbs)}
+
+    for usage, marker in [("main", "o"), ("light", "X")]:
+        for v in unique_verbs:
+            sub = df[(df["verb"] == v) & (df["usage"] == usage)]
+            if len(sub) == 0:
+                continue
+            label = f"{reshape_urdu(v) if urdu_font else v} ({usage})"
+            ax.scatter(
+                sub["pc1"], sub["pc2"],
+                c=[color_map[v]], marker=marker, alpha=0.5, s=45,
+                label=label,
+            )
+
+    ax.set_title("Global PCA across all verbs (main = circle, light = X)")
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC2")
+    ax.legend(loc="best", fontsize=8, ncol=2,
+              prop=urdu_font if urdu_font else None)
+    plt.tight_layout()
+    plt.savefig(args.global_pca_png, dpi=200)
+    print(f"Saved global PCA to {args.global_pca_png}")
+    plt.show()
