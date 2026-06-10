@@ -62,7 +62,7 @@ parser.add_argument(
 parser.add_argument(
     "--bar-png",
     default="urdu_mbert_lightverb_bars.png",
-    help="Where to save the per-verb cosine-distance bar chart.",
+    help="Where to save the per-verb cosine-distance + example-count bar chart.",
 )
 parser.add_argument(
     "--global-pca-png",
@@ -218,7 +218,7 @@ results_df.to_csv(args.results_csv, index=False)
 # ----------------------------
 # 5a. Per-verb PCA grid: one subplot per verb (fit PCA only on that verb's
 #     examples so inter-verb variance does not dominate the layout).
-# 5b. Cosine-distance bar chart across all verbs.
+# 5b. Cosine-distance bar chart + main/light example counts (two panels).
 # 5c. (Optional) Global PCA across all verbs (legacy view).
 
 COLOR_MAIN  = "#1f77b4"   # blue
@@ -226,6 +226,14 @@ COLOR_LIGHT = "#d62728"   # red
 
 verbs_with_both = results_df["verb"].tolist()
 n_verbs = len(verbs_with_both)
+
+# Build a stable per-verb colour map (used by the per-verb PCA titles and the
+# bar chart) so the same verb always gets the same colour.
+_cmap_name = "tab10" if n_verbs <= 10 else "tab20"
+_cmap = plt.get_cmap(_cmap_name)
+verb_color_map = {
+    v: _cmap(i % _cmap.N) for i, v in enumerate(verbs_with_both)
+}
 
 # ---- 5a. Per-verb PCA grid ----
 if n_verbs > 0:
@@ -284,6 +292,7 @@ if n_verbs > 0:
             f"{verb_display}    cos_dist = {cos_dist:.3f}",
             fontproperties=urdu_font if urdu_font else None,
             fontsize=13,
+            color=verb_color_map.get(verb, "black"),
         )
         ax.set_xlabel("PC1")
         ax.set_ylabel("PC2")
@@ -300,35 +309,100 @@ if n_verbs > 0:
     print(f"Saved per-verb PCA grid to {args.pca_png}")
     plt.show()
 
-# ---- 5b. Cosine-distance bar chart across all verbs ----
+# ---- 5b. Cosine-distance bar chart + example-count grouped bars ----
+#
+# Two panels, sharing the y-axis:
+#   Left  : per-verb cosine distance (each bar a different colour, taken from
+#           verb_color_map so the colour matches the per-verb PCA grid).
+#   Right : grouped bars showing how many `main` (blue) and `light` (red)
+#           examples that verb has -- so colours have a clear meaning and you
+#           can immediately see whether the comparison is well-balanced.
 if not results_df.empty:
-    fig, ax = plt.subplots(figsize=(9, max(3.5, 0.5 * len(results_df))))
+    fig, (ax1, ax2) = plt.subplots(
+        1, 2,
+        figsize=(15, max(4.0, 0.55 * len(results_df))),
+        sharey=True,
+        gridspec_kw={"width_ratios": [3, 2]},
+    )
+
     verb_labels = [
         (reshape_urdu(v) if urdu_font else v) for v in results_df["verb"]
     ]
+    bar_colors = [verb_color_map[v] for v in results_df["verb"]]
 
-    ax.barh(range(len(results_df)), results_df["cosine_distance"],
-            color="steelblue")
-    ax.set_yticks(range(len(results_df)))
-    ax.set_yticklabels(
+    # --- Left panel: separation (cosine distance) ---
+    y_pos = np.arange(len(results_df))
+    ax1.barh(
+        y_pos,
+        results_df["cosine_distance"],
+        color=bar_colors,
+        edgecolor="black",
+        linewidth=0.6,
+    )
+    ax1.set_yticks(y_pos)
+    ax1.set_yticklabels(
         verb_labels,
         fontproperties=urdu_font if urdu_font else None,
         fontsize=12,
     )
-    ax.invert_yaxis()
-    ax.set_xlabel("Cosine distance between main and light centroids")
-    ax.set_title("Per-Verb Main vs Light Separation")
+    # Colour the y-tick labels to match the bars.
+    for tick_lbl, c in zip(ax1.get_yticklabels(), bar_colors):
+        tick_lbl.set_color(c)
+
+    ax1.invert_yaxis()
+    ax1.set_xlabel("Cosine distance between main and light centroids")
+    ax1.set_title("Per-Verb Main vs Light Separation")
     for i, (_, row) in enumerate(results_df.iterrows()):
-        ax.text(
+        ax1.text(
             row["cosine_distance"] + 0.003, i,
-            f"  main={int(row['main_examples'])}, "
-            f"light={int(row['light_examples'])}",
+            f"{row['cosine_distance']:.3f}",
             va="center", fontsize=9,
         )
-    ax.grid(True, axis="x", alpha=0.25)
-    plt.tight_layout()
+    ax1.grid(True, axis="x", alpha=0.25)
+
+    # --- Right panel: main vs light example counts ---
+    bar_h = 0.38
+    ax2.barh(
+        y_pos - bar_h / 2,
+        results_df["main_examples"],
+        height=bar_h,
+        color=COLOR_MAIN,
+        label="main",
+        edgecolor="white",
+        linewidth=0.5,
+    )
+    ax2.barh(
+        y_pos + bar_h / 2,
+        results_df["light_examples"],
+        height=bar_h,
+        color=COLOR_LIGHT,
+        label="light",
+        edgecolor="white",
+        linewidth=0.5,
+    )
+    ax2.set_xlabel("Number of examples")
+    ax2.set_title("Example Counts per Verb")
+    ax2.legend(loc="lower right")
+    ax2.grid(True, axis="x", alpha=0.25)
+
+    # Annotate each count.
+    for i, (_, row) in enumerate(results_df.iterrows()):
+        ax2.text(
+            row["main_examples"] + 0.3, i - bar_h / 2,
+            str(int(row["main_examples"])),
+            va="center", fontsize=8, color=COLOR_MAIN,
+        )
+        ax2.text(
+            row["light_examples"] + 0.3, i + bar_h / 2,
+            str(int(row["light_examples"])),
+            va="center", fontsize=8, color=COLOR_LIGHT,
+        )
+
+    fig.suptitle("Per-Verb Main vs Light: Separation and Sample Sizes",
+                 fontsize=14)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.savefig(args.bar_png, dpi=200)
-    print(f"Saved cosine-distance bar chart to {args.bar_png}")
+    print(f"Saved bar chart to {args.bar_png}")
     plt.show()
 
 # ---- 5c. Optional global PCA across all verbs ----
@@ -341,8 +415,11 @@ if args.global_pca_png:
 
     fig, ax = plt.subplots(figsize=(11, 8))
     unique_verbs = list(df["verb"].unique())
-    cmap = plt.get_cmap("tab10")
-    color_map = {v: cmap(i % 10) for i, v in enumerate(unique_verbs)}
+    # Reuse the same per-verb colour map for consistency where possible.
+    global_color_map = {
+        v: verb_color_map.get(v, _cmap(i % _cmap.N))
+        for i, v in enumerate(unique_verbs)
+    }
 
     for usage, marker in [("main", "o"), ("light", "X")]:
         for v in unique_verbs:
@@ -352,7 +429,7 @@ if args.global_pca_png:
             label = f"{reshape_urdu(v) if urdu_font else v} ({usage})"
             ax.scatter(
                 sub["pc1"], sub["pc2"],
-                c=[color_map[v]], marker=marker, alpha=0.5, s=45,
+                c=[global_color_map[v]], marker=marker, alpha=0.5, s=45,
                 label=label,
             )
 
