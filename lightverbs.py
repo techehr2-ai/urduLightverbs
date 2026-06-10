@@ -1,5 +1,7 @@
 # pip install torch transformers pandas numpy scikit-learn matplotlib
 
+import argparse
+
 import torch
 import numpy as np
 import pandas as pd
@@ -12,6 +14,7 @@ from sklearn.decomposition import PCA
 from matplotlib import font_manager as fm
 from bidi.algorithm import get_display
 import arabic_reshaper
+
 URDU_FONT_PATH = "./NotoSansArabic-Regular.ttf"
 try:
     urdu_font = fm.FontProperties(fname=URDU_FONT_PATH)
@@ -19,6 +22,7 @@ try:
 except Exception as e:
     urdu_font = None
     print("Font not loaded, continuing without Urdu font. Reason:", e)
+
 def reshape_urdu(text):
     reshaped = arabic_reshaper.reshape(text)
     return get_display(reshaped)
@@ -27,191 +31,73 @@ MODEL_NAME = "../UrduBert/urdu-bert-64k-17epochs"
 
 #MODEL_NAME = "bert-base-multilingual-cased"
 
+# Default path to the CSV file containing the example sentences.
+# Override on the command line:  python lightverbs.py --input my_examples.csv
+DEFAULT_EXAMPLES_CSV = "examples.csv"
+
 # ----------------------------
-# 1. Crafted Urdu mini-corpus
+# 0. Parse CLI arguments
 # ----------------------------
 
-examples = {
-    "دیا": {
-        "main": [
-            "اس نے مجھے قلم دیا",
-            "استاد نے طالب علم کو جواب دیا",
-            "ماں نے بچے کو دودھ دیا",
-            "دوست نے مجھے تحفہ دیا",
-            "حکومت نے عوام کو ریلیف دیا",
-            "ڈاکٹر نے مریض کو مشورہ دیا",
-            "اس نے فقیر کو پیسہ دیا",
-            "لڑکے نے کتاب واپس دی",
-            "والد نے بیٹے کو اجازت دی",
-            "اس نے مجھے اپنا نمبر دیا",
-        ],
-        "light": [
-            "اس نے کام ختم کر دیا",
-            "بچے نے دروازہ بند کر دیا",
-            "میں نے خط لکھ دیا",
-            "اس نے مسئلہ حل کر دیا",
-            "انہوں نے فیصلہ سنا دیا",
-            "لڑکی نے سبق یاد کر دیا",
-            "مزدور نے گھر بنا دیا",
-            "اس نے کپڑے دھو دیے",
-            "میں نے سب کچھ بتا دیا",
-            "اس نے چراغ جلا دیا",
-        ],
-    },
+parser = argparse.ArgumentParser(
+    description="Compare main-verb vs light-verb uses of Urdu verbs using BERT embeddings."
+)
+parser.add_argument(
+    "--input", "-i",
+    default=DEFAULT_EXAMPLES_CSV,
+    help=f"Path to the input CSV file (default: {DEFAULT_EXAMPLES_CSV}). "
+         "Must contain columns: verb, usage, sentence. "
+         "`usage` must be either 'main' or 'light'.",
+)
+parser.add_argument(
+    "--results-csv",
+    default="urdu_mbert_lightverb_results.csv",
+    help="Where to write the per-verb cosine distance results.",
+)
+parser.add_argument(
+    "--pca-png",
+    default="urdu_mbert_lightverb_pca.png",
+    help="Where to save the PCA scatter plot.",
+)
+args = parser.parse_args()
 
-    "گیا": {
-        "main": [
-            "وہ کل لاہور گیا",
-            "احمد بازار گیا",
-            "بچہ اسکول گیا",
-            "میرا بھائی دفتر گیا",
-            "وہ ڈاکٹر کے پاس گیا",
-            "استاد کلاس میں گیا",
-            "مسافر اسٹیشن گیا",
-            "وہ مسجد گیا",
-            "دوست میرے گھر گیا",
-            "لڑکا میدان میں گیا",
-        ],
-        "light": [
-            "کام مکمل ہو گیا",
-            "دروازہ بند ہو گیا",
-            "مسئلہ حل ہو گیا",
-            "بچہ سو گیا",
-            "کھیل ختم ہو گیا",
-            "بارش شروع ہو گئی",
-            "چراغ بجھ گیا",
-            "دل ٹوٹ گیا",
-            "رنگ بدل گیا",
-            "معاملہ واضح ہو گیا",
-        ],
-    },
+# ----------------------------
+# 1. Load Urdu mini-corpus from CSV
+# ----------------------------
+# Expected columns:
+#   verb     : the verb being studied (e.g., "دیا")
+#   usage    : either "main" or "light"
+#   sentence : the example Urdu sentence containing the verb
 
-    "بیٹھا": {
-        "main": [
-            "وہ کرسی پر بیٹھا",
-            "بچہ زمین پر بیٹھا",
-            "استاد میز کے پاس بیٹھا",
-            "احمد خاموشی سے بیٹھا",
-            "مہمان صوفے پر بیٹھا",
-            "لڑکا درخت کے نیچے بیٹھا",
-            "وہ کمرے میں بیٹھا",
-            "بوڑھا آدمی بینچ پر بیٹھا",
-            "شاگرد کلاس میں بیٹھا",
-            "مسافر بس میں بیٹھا",
-        ],
-        "light": [
-            "وہ اچانک رو بیٹھا",
-            "بچہ بات کہہ بیٹھا",
-            "میں غلطی کر بیٹھا",
-            "وہ راز بتا بیٹھا",
-            "لڑکا وعدہ کر بیٹھا",
-            "وہ ہنس بیٹھا",
-            "احمد ناراض ہو بیٹھا",
-            "وہ انکار کر بیٹھا",
-            "میں سوال پوچھ بیٹھا",
-            "وہ فیصلہ کر بیٹھا",
-        ],
-    },
+df = pd.read_csv(args.input, encoding="utf-8")
 
-    "اٹھا": {
-        "main": [
-            "وہ صبح جلدی اٹھا",
-            "بچہ نیند سے اٹھا",
-            "احمد کرسی سے اٹھا",
-            "وہ زمین سے اٹھا",
-            "مریض بستر سے اٹھا",
-            "لڑکا نماز کے لیے اٹھا",
-            "وہ اچانک اٹھا",
-            "بوڑھا آدمی آہستہ اٹھا",
-            "مہمان کھانے کے بعد اٹھا",
-            "استاد میز سے اٹھا",
-        ],
-        "light": [
-            "وہ زور سے بول اٹھا",
-            "بچہ اچانک ہنس اٹھا",
-            "مجمع شور مچا اٹھا",
-            "وہ خوشی سے چلا اٹھا",
-            "عورت رو اٹھا",
-            "لڑکا چیخ اٹھا",
-            "دل تڑپ اٹھا",
-            "لوگ احتجاج کر اٹھے",
-            "احمد سوال کر اٹھا",
-            "سامعین داد دے اٹھے",
-        ],
-    },
+required_cols = {"verb", "usage", "sentence"}
+missing = required_cols - set(df.columns)
+if missing:
+    raise ValueError(
+        f"Input CSV {args.input!r} is missing required columns: {sorted(missing)}. "
+        f"Found columns: {list(df.columns)}"
+    )
 
-    "پڑا": {
-        "main": [
-            "کتاب میز پر پڑی تھی",
-            "کپڑا زمین پر پڑا تھا",
-            "خط دراز میں پڑا تھا",
-            "بیگ کمرے میں پڑا تھا",
-            "پتھر راستے میں پڑا تھا",
-            "جوتا دروازے کے پاس پڑا تھا",
-            "اخبار صوفے پر پڑا تھا",
-            "کھلونا فرش پر پڑا تھا",
-            "پرس گاڑی میں پڑا تھا",
-            "موبائل بستر پر پڑا تھا",
-        ],
-        "light": [
-            "وہ اچانک ہنس پڑا",
-            "بچہ زور سے رو پڑا",
-            "احمد غصے میں بول پڑا",
-            "لڑکی خوف سے چیخ پڑی",
-            "وہ بات سن کر مسکرا پڑا",
-            "استاد حیران رہ پڑا",
-            "میں جواب دے پڑا",
-            "وہ بے اختیار کہہ پڑا",
-            "لوگ تالیاں بجا پڑے",
-            "بچہ سوال پوچھ پڑا",
-        ],
-    },
+# Normalise text columns and drop empty rows.
+df["verb"]     = df["verb"].astype(str).str.strip()
+df["usage"]    = df["usage"].astype(str).str.strip().str.lower()
+df["sentence"] = df["sentence"].astype(str).str.strip()
+df = df[(df["verb"] != "") & (df["sentence"] != "")].reset_index(drop=True)
 
-    "آیا": {
-        "main": [
-            "وہ کل گھر آیا",
-            "احمد بازار  آیا",
-            "مہمان شام کو آیا",
-            "بچہ اسکول آیا",
-            "ڈاکٹر اسپتال آیا",
-            "استاد کلاس میں آیا",
-            "دوست میرے پاس آیا",
-            "بھائی لاہور آیا",
-            "مسافر اسٹیشن آیا",
-            "وہ دیر سے آیا",
-        ],
-        "light": [
-           "اس کے ذہن میں تصویرکشی کا انوکھا مصرف ابھر آیا",
-            "اقرار الحسن کے جلسے میں لوگوں کا ٹھاٹھیں مارتا ہوا سمندر امنڈ آیا",
-            "بھالو والا ڈگڈگی بجاتا آیا",
-            "ایک بندہ بھاگتا آیا",
-            "وہ بولتا آیا",
-            "کسان کے جاتے ہی ایک گڈریا چشمے پر اپنی بکریوں کو پانی پلانے آیا",
-            "میں اس کے سارے خط جلا آیا",
-            "کوئی کندھوں پہ چڑھ آیا",
-            "وہ سرکس دیکھنے چلا آیا",
-            "اور وہ تیرے پاس دوڑتا آیا",
-            "ایک نابینا شیش محل دیکھنے آیا",
-            "زخمی طالب علم ایمبولینس میں نہم کا پرچہ دینے آیا",
-            "مجھے درد سے رونا آیا",
-            "لیکن اسے ادھورا چھوڑ کر ایک نئی زندگی کی طرف کیوں لوٹ آیا",
-            "ایک دن مالک مکان کرایہ لینے آیا",
-            "بچہ کلاس میں اپنا کھلونا لے آیا",
-            "ایک کافر شخص آپ کو مارنے آیا",
-            "مجھے افق پر عید کا چاند نظر آیا",
-            "نیز وہ منی لانڈرنگ والی فہرست سے بھی نکل آیا",
-            "تیسرے نمبر پہ ایک حرامی ہنستا آیا", 
-        ],
-    },
-}
+# Warn about any rows whose `usage` is not main / light.
+valid_usage = {"main", "light"}
+bad_usage = df[~df["usage"].isin(valid_usage)]
+if not bad_usage.empty:
+    print(
+        f"Warning: dropping {len(bad_usage)} row(s) whose 'usage' is not in {valid_usage}. "
+        f"Unique bad values: {sorted(bad_usage['usage'].unique())}"
+    )
+    df = df[df["usage"].isin(valid_usage)].reset_index(drop=True)
 
-rows = []
-for verb, groups in examples.items():
-    for usage, sents in groups.items():
-        for sent in sents:
-            rows.append({"verb": verb, "usage": usage, "sentence": sent})
-
-df = pd.DataFrame(rows)
+print(f"Loaded {len(df)} sentences from {args.input!r}")
+print("Counts per verb / usage:")
+print(df.groupby(["verb", "usage"]).size().unstack(fill_value=0))
 
 # ----------------------------
 # 2. Load mBERT
@@ -264,6 +150,10 @@ df["embedding"] = df.apply(
     axis=1
 )
 
+missing_emb = df["embedding"].isnull().sum()
+if missing_emb:
+    print(f"Warning: could not extract an embedding for {missing_emb} sentence(s); they will be skipped.")
+
 df = df[df["embedding"].notnull()].reset_index(drop=True)
 
 # ----------------------------
@@ -275,10 +165,20 @@ results = []
 for verb in df["verb"].unique():
     sub = df[df["verb"] == verb]
 
-    main_vecs = np.stack(sub[sub["usage"] == "main"]["embedding"])
-    light_vecs = np.stack(sub[sub["usage"] == "light"]["embedding"])
+    main_sub  = sub[sub["usage"] == "main"]
+    light_sub = sub[sub["usage"] == "light"]
 
-    main_centroid = main_vecs.mean(axis=0)
+    if len(main_sub) == 0 or len(light_sub) == 0:
+        print(
+            f"Skipping verb {verb!r}: need at least one 'main' and one 'light' example "
+            f"(found main={len(main_sub)}, light={len(light_sub)})."
+        )
+        continue
+
+    main_vecs  = np.stack(main_sub["embedding"])
+    light_vecs = np.stack(light_sub["embedding"])
+
+    main_centroid  = main_vecs.mean(axis=0)
     light_centroid = light_vecs.mean(axis=0)
 
     similarity = cosine_similarity([main_centroid], [light_centroid])[0][0]
@@ -300,7 +200,7 @@ results_df = pd.DataFrame(results).sort_values(
 print("\nMain vs Light Verb Distance")
 print(results_df)
 
-results_df.to_csv("urdu_mbert_lightverb_results.csv", index=False)
+results_df.to_csv(args.results_csv, index=False)
 
 # ----------------------------
 # 5. PCA visualization
@@ -318,7 +218,6 @@ plt.figure(figsize=(10, 7))
 
 for usage in ["main", "light"]:
     sub = df[df["usage"] == usage]
-    
     plt.scatter(sub["pc1"], sub["pc2"], label=usage, alpha=0.7)
 
 for _, row in df.iterrows():
@@ -329,5 +228,5 @@ plt.xlabel("PC1")
 plt.ylabel("PC2")
 plt.legend()
 plt.tight_layout()
-plt.savefig("urdu_mbert_lightverb_pca.png", dpi=300)
+plt.savefig(args.pca_png, dpi=300)
 plt.show()
